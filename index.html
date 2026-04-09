@@ -1,0 +1,219 @@
+<!DOCTYPE html>
+<html lang="it">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Visualizzatore Tiled Model (EPSG:7792)</title>
+
+  <!-- Calcite Components per l'interfaccia utente -->
+  <script type="module" src="https://js.arcgis.com/calcite-components/2.8.0/calcite.esm.js"></script>
+  <link rel="stylesheet" type="text/css" href="https://js.arcgis.com/calcite-components/2.8.0/calcite.css" />
+
+  <!-- ArcGIS Maps SDK for JavaScript per il rendering 3D -->
+  <link rel="stylesheet" href="https://js.arcgis.com/4.29/esri/themes/dark/main.css" />
+  <script src="https://js.arcgis.com/4.29/"></script>
+
+  <style>
+    html, body {
+      margin: 0;
+      padding: 0;
+      height: 100%;
+      width: 100%;
+      background-color: #1e1e1e;
+      font-family: var(--calcite-sans-family);
+      overflow: hidden;
+    }
+    #viewDiv {
+      width: 100%;
+      height: 100%;
+    }
+    .custom-panel {
+      width: 420px;
+    }
+    .content-container {
+      padding: 1rem;
+    }
+    .file-upload-wrapper {
+      margin-top: 1rem;
+      padding: 1rem;
+      border: 2px dashed #555;
+      border-radius: 8px;
+      text-align: center;
+      background: #2a2a2a;
+      transition: border-color 0.3s;
+    }
+    .file-upload-wrapper:hover {
+      border-color: #007ac2;
+    }
+    #slpkInput {
+      width: 100%;
+      cursor: pointer;
+    }
+  </style>
+</head>
+<body>
+
+  <calcite-shell class="calcite-mode-dark">
+    <!-- Pannello Laterale -->
+    <calcite-shell-panel slot="panel-start" position="start" detached class="custom-panel">
+      <calcite-panel heading="Streaming Locale Tiled Model">
+        <div class="content-container">
+          
+          <calcite-notice icon="shield" open kind="success" scale="s" style="margin-bottom: 1rem;">
+            <div slot="title">100% Privato e Veloce</div>
+            <div slot="message">
+              Il file <b>non viene caricato su internet</b>. Viene letto in streaming direttamente dal tuo disco rigido per garantire massime prestazioni anche con modelli di decine di GB.
+            </div>
+          </calcite-notice>
+
+          <div class="file-upload-wrapper">
+            <calcite-label layout="inline">
+              <calcite-icon icon="folder-open" scale="m" style="margin-right: 8px;"></calcite-icon>
+              Seleziona file .slpk
+            </calcite-label>
+            <input type="file" id="slpkInput" accept=".slpk" />
+          </div>
+
+          <div id="loadingStatus" style="padding: 1rem 0; text-align: center; display: none;">
+            <calcite-loader label="Caricamento in corso..."></calcite-loader>
+            <p style="margin-top: 1rem; color: #ccc;">Lettura dell'indice dal disco in corso...</p>
+          </div>
+
+        </div>
+      </calcite-panel>
+    </calcite-shell-panel>
+
+    <!-- Contenitore della Scena 3D -->
+    <div id="viewDiv"></div>
+
+    <calcite-alert id="alertNotice" icon="check" kind="success" label="Operazione completata" auto-close auto-close-duration="5000">
+      <div slot="title">Modello caricato con successo</div>
+      <div slot="message">Streaming avviato. Inquadramento automatico in EPSG:7792.</div>
+    </calcite-alert>
+
+    <calcite-alert id="errorNotice" icon="exclamation-mark-triangle" kind="danger" label="Errore">
+      <div slot="title">Errore di caricamento</div>
+      <div slot="message">Impossibile leggere il file. Assicurati che sia un pacchetto SLPK valido esportato da Metashape.</div>
+    </calcite-alert>
+  </calcite-shell>
+
+  <script>
+    require([
+      "esri/Map",
+      "esri/views/SceneView",
+      "esri/geometry/SpatialReference",
+      "esri/layers/IntegratedMeshLayer",
+      "esri/config"
+    ], function(Map, SceneView, SpatialReference, IntegratedMeshLayer, esriConfig) {
+
+      // 1. Configurazione Iniziale: CRS EPSG:7792
+      const epsg7792 = new SpatialReference({ wkid: 7792 });
+      
+      const map = new Map({
+        basemap: null
+      });
+
+      // Inizializzazione della scena 3D
+      const view = new SceneView({
+        container: "viewDiv",
+        map: map,
+        viewingMode: "local",
+        spatialReference: epsg7792,
+        
+        // Manteniamo l'ottimizzazione della memoria
+        qualityProfile: "low", 
+        
+        camera: {
+          position: {
+            x: 500000, 
+            y: 5000000,
+            z: 150000,
+            spatialReference: epsg7792
+          },
+          heading: 0,
+          tilt: 45
+        },
+        environment: {
+          background: { type: "color", color: [40, 40, 40, 1] },
+          starsEnabled: false,
+          atmosphereEnabled: false,
+          lighting: {
+            type: "virtual",
+            directShadowsEnabled: true
+          }
+        }
+      });
+
+      // Intercettore: Aggiungiamo un'estensione fittizia ".slpk" agli URL blob
+      // Questo aiuta l'API di Esri a capire subito che si tratta di un file locale zip/slpk
+      esriConfig.request.interceptors.push({
+        urls: ["blob:"],
+        before: function(params) {
+           // Rimuoviamo la query string che Esri a volte aggiunge ai file locali
+           if(params.requestOptions.query) {
+             params.requestOptions.query = null;
+           }
+        }
+      });
+
+      const fileInput = document.getElementById("slpkInput");
+      const alertNotice = document.getElementById("alertNotice");
+      const errorNotice = document.getElementById("errorNotice");
+      const loadingStatus = document.getElementById("loadingStatus");
+
+      let currentLayer = null;
+      let currentBlobUrl = null;
+
+      // 2. Gestione selezione file dal PC
+      fileInput.addEventListener("change", (e) => {
+        const file = e.target.files[0];
+        if (!file) return;
+
+        // Pulizia del layer e della memoria precedente
+        if (currentLayer) {
+          map.remove(currentLayer);
+          currentLayer = null;
+        }
+        if (currentBlobUrl) {
+          URL.revokeObjectURL(currentBlobUrl); // Libera la memoria del browser
+        }
+
+        loadingStatus.style.display = "block";
+
+        try {
+          // Creiamo un URL virtuale ("blob:http://...") che punta al file sul disco
+          currentBlobUrl = URL.createObjectURL(file);
+
+          // Inizializziamo il layer Mesh passando l'URL virtuale
+          currentLayer = new IntegratedMeshLayer({
+            url: currentBlobUrl
+          });
+
+          map.add(currentLayer);
+
+          // Attendi che il layer legga l'indice (i primi byte del file) per zoomare
+          currentLayer.when(() => {
+            loadingStatus.style.display = "none";
+            view.goTo(currentLayer.fullExtent, { duration: 2500 })
+              .catch(function(error) {
+                if (error.name != "AbortError") {
+                   console.error("Errore di navigazione: ", error);
+                }
+              });
+            alertNotice.open = true;
+          }).catch((error) => {
+            console.error("Errore nel caricamento dell'SLPK:", error);
+            loadingStatus.style.display = "none";
+            errorNotice.open = true;
+          });
+
+        } catch (error) {
+           console.error("Errore generico", error);
+           loadingStatus.style.display = "none";
+           errorNotice.open = true;
+        }
+      });
+    });
+  </script>
+</body>
+</html>
